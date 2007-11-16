@@ -1,5 +1,5 @@
 #labels Featured
-= Changelog =
+= Version 1.0 =
 
   * Parsing of (multi-file) torrents, metalink templates, hash and mirror list files (or URLs).
   * Automatic searching and hashing of local download files (MD5, SHA1, SHA256, ED2K).
