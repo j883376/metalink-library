@@ -1,7 +1,7 @@
 #labels Featured
 = Version 1.1 =
 
-  * BitTorrent creation (only single-file torrents for now), import chunks only from single-file .torrents.
+  * Generate BitTorrent files (only single-file torrents for now), import chunks only from single-file .torrents.
   * Extended command-line support.
   * Import of signature files.
   * Metalink update mode: apply options to .metalink files, hash found download files (of the new version) and generate .torrent.
