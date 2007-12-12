@@ -4,6 +4,8 @@
 #    Copyright (c) 2007 René Leonhardt, Germany.
 #    Copyright (c) 2007 Hampus Wessman, Sweden.
 #
+#    Website: http://code.google.com/p/metalink-library/
+#
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
 #    the Free Software Foundation; either version 2 of the License, or
@@ -29,47 +31,96 @@ try:
 except ImportError:
     pass
 
-current_version = "1.1.0"
+# Globals
+current_version = "1.1"
+generator="Metalink Library %s" % current_version
+fs_encoding = sys.getfilesystemencoding()
 preference_ed2k = "95"
 verbose = False
+# Command-line options
+_opts = {}
 
 
-def usage_and_exit(error_msg=None):
-  progname = os.path.basename(sys.argv[0])
+def usage_and_exit(error_msg=None, options=''):
+    progname = os.path.basename(sys.argv[0])
 
-  stream = error_msg and sys.stderr or sys.stdout
-  if error_msg:
-    print >> stream, "ERROR: %s\n" % error_msg
-  print >> stream, """Metalink Generator %s by Hampus Wessman and Rene Leonhardt
+    stream = error_msg and sys.stderr or sys.stdout
+    if error_msg:
+        print >> stream, "ERROR: %s\n" % error_msg
 
+    print >> stream, "Metalink Library %s by Rene Leonhardt and Hampus Wessman" % current_version
+    if error_msg is False: sys.exit()
+
+    print >> stream, """
 Usage: %s [FILE|DIRECTORY]...
 
-Create Metalink download files by parsing download files.
+Create Metalink and BitTorrent files by parsing download files.
 Helper files will be searched and parsed automatically:
-.metalink, .torrent, .mirrors, .md5, .sha1, MD5SUMS, SHA1SUMS.
+.metalink, .torrent, .mirrors, .md5, .sha1, .sha256 (sum, SUMS), .sig.
 Glob wildcard expressions are allowed for filenames (openproj-0.9.6*).
+Torrents will only be created for single files with chunks (parsed or scanned).
+Chunks will only be imported from single-file torrents.
 
 
 Examples:
 
 # Parse file1, search helper files file1.* and generate file1.metalink.
-%s file1
+# In addition, create file1.torrent (if exists, create file1.torrent.new).
+%s file1 --create-torrent=http://linuxtracker.org/announce.php
 
 # Parse directory, search download and helper files *.* and generate
 # *.metalink for all non-helper files bigger than 1 MB.
+# First metalink file with no download file match will be the template
+# for download files with no corresponding metalink file.
 %s directory
 
-# Define URL prefix to save the original .metalink download URL
-# http://openoffice.org/url/prefix/file1.metalink.
+# Upgrade to new release with single metalink template.
+%s --version=1.1 file-1.0.zip.metalink file-1.1*
+
+# Update file-1.0*.metalink files with new version number 1.1,
+# parse file-1.1* and file-1.1*.torrent and generate file-1.1*.metalink.
+%s --version=1.1 file-1.0*.metalink
+
+# Define URL prefix to save the original .metalink download URL:
+# http://openoffice.org/url/prefix/file1.metalink
 %s http://openoffice.org/url/prefix/ file1
-""" % (current_version, progname, progname, progname, progname)
-  sys.exit(error_msg and 1 or 0)
+%s""" % (progname, progname, progname, progname, progname, progname, options and "\n\nOptions:\n" + options or ''),
+    sys.exit(error_msg and 1 or 0)
 
 def get_first(x):
     try:
         return x[0]
     except:
         return x
+
+def check_rfc822_date(date):
+    if date.strip() != "":
+        _date = re.sub(r' (GMT|\+0000)$', '', date)
+        try:
+            time.strptime(_date, "%a, %d %b %Y %H:%M:%S")
+        except ValueError, e:
+            return False
+    return True
+
+def encode_text(text, encoding='utf-8'):
+    return text.decode(fs_encoding).encode(encoding)
+
+def split_values(value_list, return_array=True, separator=',', separator2=''):
+    '''Return splitted list of comma-separated value_list'''
+    if not value_list or not isinstance(value_list, basestring):
+        if return_array:
+            return []
+        return value_list
+    values = []
+    for value in value_list.split(separator):
+        value = value.strip()
+        if not value:
+            continue
+        if separator2:
+            values.append(split_values(value, True, separator2))
+        elif value not in values:
+            values.append(value)
+    return values
 
 # Uses compression if available
 # HINT: Use httplib2 if possible
@@ -113,19 +164,19 @@ def generate_verification_and_resources(self, add_p2p=True, protocols=[], is_chi
 
     # Verification
     if self.hashes.pieces or self.signature or self.hashes.has_one('ed2k md5 sha1 sha256'):
-        text += indentation + '  <verification>\n'
+        text += indentation + '  <verification>' + os.linesep
         # TODO: ed2k really allowed?
         for hash, value in sorted(self.hashes.get_multiple('ed2k md5 sha1 sha256').items()):
-            text += '%s    <hash type="%s">%s</hash>\n' % (indentation, hash, value.lower())
+            text += '%s    <hash type="%s">%s</hash>%s' % (indentation, hash, value.lower(), os.linesep)
         # TODO: Why len(self.pieces) > 1 ?
         if len(self.hashes.pieces):
-            text += indentation + '    <pieces type="'+self.hashes.piecetype+'" length="'+self.hashes.piecelength+'">\n'
+            text += indentation + '    <pieces type="'+self.hashes.piecetype+'" length="'+self.hashes.piecelength+'">' + os.linesep
             for id, piece in enumerate(self.hashes.pieces):
-                text += indentation + '      <hash piece="'+str(id)+'">'+piece+'</hash>\n'
-            text += indentation + '    </pieces>\n'
+                text += indentation + '      <hash piece="'+str(id)+'">'+piece+'</hash>' + os.linesep
+            text += indentation + '    </pieces>' + os.linesep
         if self.signature.strip() != "":
-            text += '%s    <signature type="%s">%s</signature>\n' % (indentation, self.signature_type, self.signature)
-        text += indentation + '  </verification>\n'
+            text += '%s    <signature type="%s">%s</signature>%s' % (indentation, self.signature_type, self.signature, os.linesep)
+        text += indentation + '  </verification>' + os.linesep
 
     # Add missing P2P resources implicitly if hashes are available
     if add_p2p and 'ed2k' in self.hashes and self.size and getattr(self, 'filename', '') and 'ed2k' not in protocols:
@@ -155,17 +206,17 @@ def generate_verification_and_resources(self, add_p2p=True, protocols=[], is_chi
 
     if self.resources:
         if getattr(self, 'maxconn_total', '') and "" != self.maxconn_total.strip() and "-" != self.maxconn_total.strip():
-            text += indentation + '  <resources maxconnections="' + self.maxconn_total + '">\n'
+            text += indentation + '  <resources maxconnections="' + self.maxconn_total + '">' + os.linesep
         else:
-            text += indentation + "  <resources>\n"
+            text += indentation + "  <resources>" + os.linesep
         for res in self.resources:
             details = ''
             if res.location.strip() != "":
                 details += ' location="'+res.location.lower()+'"'
             if res.preference.strip() != "": details += ' preference="'+res.preference+'"'
             if res.conns.strip() != "" and res.conns.strip() != "-" : details += ' maxconnections="'+res.conns+'"'
-            text += '%s    <url type="%s"%s>%s</url>\n' % (indentation, res.type, details, escape(res.url))
-        text += indentation + '  </resources>\n'
+            text += '%s    <url type="%s"%s>%s</url>%s' % (indentation, res.type, details, escape(res.url), os.linesep)
+        text += indentation + '  </resources>' + os.linesep
 
     return text
 
@@ -180,7 +231,42 @@ def is_url(url):
     return url[-1] == '/' and 1 or 2
 
 def main(args=[]):
-    renames = [] # [['-7.10-', '-7.10-rc-']]
+    global _opts, verbose
+
+    # Read arguments and options
+    optParser = OptParser(['create-torrent=sURLs','Create torrent with given tracker URLs (comma separates groups, space separates group members: "t1, t2a t2b")', 'overwrite','Overwrite existing files (otherwise append .new)', 'template|t=sFILE','Metalink template file', 'url-prefix=sURL','URL prefix (where metalink should be placed online)', 'verbose|v','Verbose output', 'V','Show program version and exit', 'help|h','Print this message and exit\n\nMetalink options:',
+        'changelog=sTEXT','Changelog',
+        'copyright=sTEXT','Copyright',
+        'description=sTEXT','Description',
+        'identity=sTEXT','Identity',
+        'license-name=sTEXT','Name of the license',
+        'license-url=sURL','URL of the license',
+        'logo=sURL','Logo URL',
+        'origin=sURL','Absolute or relative URL to this metalink file (online)',
+        'publisher-name=sTEXT','Name of the publisher',
+        'publisher-url=sURL','URL of the publisher',
+        'refreshdate=sDATE','RFC 822 date of refresh (for type "dynamic")',
+        'releasedate=sDATE','RFC 822 date of release',
+        'screenshot=sURL','Screenshot(s) URL',
+        'tags=sTEXT','Comma-separated list of tags',
+        'type=sTEXT','Type of this metalink file ("dynamic" or "static")',
+        'upgrade=sTYPE','Upgrade type ("install", "uninstall, reboot, install" or "uninstall, install")',
+        'version=sTEXT','Version of the file'])
+    _args = sys.argv[1:]
+    _opts, args, stdin, errors = optParser.parse(_args)
+
+    if _opts['verbose'] is not None:
+        verbose = _opts['verbose']
+    if _opts['help'] or errors:
+        usage_and_exit(os.linesep.join(errors), optParser.getHelp())
+    if _opts['V']:
+        usage_and_exit(False)
+
+    # Sanitize options
+    # TODO: check rest of _opts
+    _opts['tags'] = split_values(_opts['tags'], False)
+
+    new_version = ''
     url_prefix = ''
     files = {}
     files_skipped = []
@@ -196,8 +282,14 @@ def main(args=[]):
     _signatures = {}
     _torrents = {}
 
-    # Read arguments
-    args = sys.argv[1:] + args
+    if _opts['template'] and os.path.isfile(_opts['template']):
+        _files.append(_opts['template'])
+    if _opts['url_prefix']:
+        url_prefix = _opts['url_prefix']
+    if _opts['version']:
+        new_version = _opts['version']
+    if _opts['create_torrent']:
+        _opts['create_torrent'] = split_values(_opts['create_torrent'], True, ',', ' ')
 
     # Search files and url_prefix
     for arg in args:
@@ -259,6 +351,35 @@ def main(args=[]):
         files_skipped.sort()
         print >>sys.stderr, "Skipped the following files:\n%s" % "\n".join(files_skipped)
 
+    # Metalink update mode
+    if not files and len(_metalinks):
+        print 'Metalink update mode (apply options and create torrents)'
+        for filename, file in _metalinks.items():
+            m = Metalink(False)
+            m.load_file(file, False)
+
+            if m.version and m.version != new_version:
+                m.change_filename(new_version, m.version)
+                new_file = os.path.dirname(file) + os.sep + filename.replace(m.version, new_version) + '.metalink'
+            else:
+                new_file = file
+
+            # Parse parallel files
+            local_file = new_file[:-9]
+            torrent = local_file + '.torrent'
+            if os.path.isfile(torrent):
+                m.parse_torrent(torrent)
+            if os.path.isfile(local_file):
+                m.scan_file(local_file)
+
+            # Force current creation date (may be overwritten by command-line option afterwards)
+            m.pubdate = ''
+            m.apply_command_line_options()
+            if os.path.isfile(new_file) and not _opts['overwrite']:
+                new_file += '.new'
+            m.generate(new_file)
+        return
+
     # Mirror update mode
     if not files and len(_metalinks) == 1 and len(_mirrors) == 1:
         files[_metalinks.keys()[0]] = _metalinks.keys()[0]
@@ -275,25 +396,22 @@ def main(args=[]):
             _hashes_general.parse(file)
 
     if not files:
-        usage_and_exit() # 'No files to process'
+        usage_and_exit(None, optParser.getHelp()) # 'No files to process'
 
     for filename, file in files.items():
         print 'Processing %s' % file
         m = Metalink()
 
-        _filename = renames and filename.replace(renames[0][0], renames[0][1]) or filename
-
         # Parse metalink template
-        if _filename in _metalinks:
-            m.load_file(_metalinks[_filename])
+        if filename in _metalinks:
+            m.load_file(_metalinks[filename])
         elif _metalink_general:
             m.load_file(_metalink_general)
 
-        #if m.file.filename and not m.filename_absolute:
-        #    m.filename_absolute = file[:-8]
+        # Force pubdate to be the current timestamp
+        m.pubdate = ''
 
         # Overwrite old mirror filenames from template
-        # filename = filename.replace('-rc-', '-')
         m.change_filename(filename)
 
         if filename in _mirrors:
@@ -309,6 +427,10 @@ def main(args=[]):
             m.parse_torrent(_torrents[filename])
         elif len(_torrents) == len(files) == 1:
             m.parse_torrent(_torrents.values()[0])
+
+        # Parse signature file
+        if filename in _signatures:
+            m.import_signature(_signatures[filename])
 
         # Parse hash files
         _hashes_general.set_file(file)
@@ -429,6 +551,12 @@ class Metafile(object):
             return True
         return False
 
+    def import_signature(self, file):
+        fp = open(file, "rb")
+        self.signature = fp.read()
+        fp.close()
+        return True
+
     def scan_file(self, filename, use_chunks=True, max_chunks=255, chunk_size=256, progresslistener=None):
         if verbose: print "Scanning file..."
         # Filename and size
@@ -543,23 +671,22 @@ class Metafile(object):
                             length_ed2k = 0
                 else:
                     hashes['md4'].update(data)
-            if use_chunks:
-                while left > 0:
-                    if length + left <= self.hashes.piecelength:
-                        piecehash.update(data)
-                        length += left
-                        left = 0
-                    else:
-                        numbytes = self.hashes.piecelength - length
-                        piecehash.update(data[:numbytes])
-                        length = self.hashes.piecelength
-                        data = data[numbytes:]
-                        left -= numbytes
-                    if length == self.hashes.piecelength:
-                        if verbose: print "Done with piece hash", len(self.hashes.pieces)
-                        self.hashes.pieces.append(piecehash.hexdigest())
-                        piecehash = sha1hash_copy.copy()
-                        length = 0
+            while use_chunks and left > 0:
+                if length + left <= self.hashes.piecelength:
+                    piecehash.update(data)
+                    length += left
+                    left = 0
+                else:
+                    numbytes = self.hashes.piecelength - length
+                    piecehash.update(data[:numbytes])
+                    length = self.hashes.piecelength
+                    data = data[numbytes:]
+                    left -= numbytes
+                if length == self.hashes.piecelength:
+                    if verbose: print "Done with piece hash", len(self.hashes.pieces)
+                    self.hashes.pieces.append(piecehash.hexdigest())
+                    piecehash = sha1hash_copy.copy()
+                    length = 0
         if use_chunks:
             if length > 0:
                 if verbose: print "Done with piece hash", len(self.hashes.pieces)
@@ -629,16 +756,16 @@ class Metafile(object):
 
     def generate_file(self, add_p2p=True):
         if self.filename.strip() != "":
-            text = '    <file name="' + self.filename + '">\n'
+            text = '    <file name="' + self.filename + '">' + os.linesep
         else:
-            text = '    <file>\n'
+            text = '    <file>' + os.linesep
         # File info
         # TODO: relations
         for attr in 'identity size version language os changelog description logo mimetype releasedate screenshot upgrade'.split():
             if "" != getattr(self, attr).strip():
-                text += "      <%s>%s</%s>\n" % (attr, escape(getattr(self, attr)), attr)
+                text += "      <%s>%s</%s>%s" % (attr, escape(getattr(self, attr)), attr, os.linesep)
         if self.tags:
-            text += '      <tags>' + ','.join(unique(self.tags)) + "</tags>\n"
+            text += '      <tags>' + ','.join(unique(self.tags)) + "</tags>" + os.linesep
 
         # Add mirrors
         for url, type, location, preference in self.mirrors.mirrors:
@@ -649,7 +776,7 @@ class Metafile(object):
 
         text += generate_verification_and_resources(self, add_p2p, self.get_protocols())
 
-        text += '    </file>\n'
+        text += '    </file>' + os.linesep
         return text
 
     # Return list of found resource types
@@ -698,15 +825,22 @@ class Metafile(object):
         if not old or not new:
             return False
 
+        self.filename = self.filename.replace(old, new)
+
         self.mirrors.change_filename(new, old)
 
+        # Clear resources containing size and hashes
         self.clear_res('ed2k magnet')
+        self.hashes.init()
+        self.size = ''
 
         old = urllib.quote(old)
         new = urllib.quote(new)
 
+        self.urls = []
         for res in self.resources:
             res.url = res.url.replace(old, new)
+            self.urls.append(res.url)
 
         return True
 
@@ -727,11 +861,12 @@ class Metafile(object):
         return [res.url for res in self.resources]
 
 class Metalink(object):
-    def __init__(self):
+    def __init__(self, overwrite_with_opts=True):
         self.changelog = ""
         self.copyright = ""
         self.description = ""
         self.filename_absolute = ""
+        self.generator = ""
         self.identity = ""
         self.license_name = ""
         self.license_url = ""
@@ -748,6 +883,9 @@ class Metalink(object):
         self.upgrade = ""
         self.version = ""
 
+        if overwrite_with_opts:
+            self.apply_command_line_options()
+
         # For multi-file torrent data
         self.hashes = Hashes()
         self.resources = []
@@ -761,6 +899,16 @@ class Metalink(object):
         self.files = [self.file]
         self.url_prefix = ''
         self._valid = True
+
+    def apply_command_line_options(self):
+        for opt in 'changelog copyright description filename_absolute generator identity license_name license_url logo origin pubdate publisher_name publisher_url refreshdate releasedate screenshot tags type upgrade version'.split():
+            if opt in _opts and _opts[opt]:
+                setattr(self, opt, _opts[opt])
+
+    def create_torrent(self, torrent_trackers, torrent):
+        t = Torrent(torrent)
+        data = {'comment':encode_text(self.description), 'files':[[encode_text(self.file.filename), int(self.file.size)]], 'piece length':int(self.file.hashes.piecelength), 'pieces':self.file.hashes.pieces, 'trackers':torrent_trackers, 'created by':generator, 'encoding':'UTF-8'}
+        return t.create(data)
 
     def clear_res(self, types=''):
         self.file.clear_res(types)
@@ -777,6 +925,9 @@ class Metalink(object):
     def add_res(self, res):
         return self.file.add_res(res)
 
+    def import_signature(self, file):
+        return self.file.import_signature(file)
+
     def scan_file(self, filename, use_chunks=True, max_chunks=255, chunk_size=256, progresslistener=None):
         self.filename_absolute = filename
         return self.file.scan_file(filename, use_chunks, max_chunks, chunk_size, progresslistener)
@@ -786,19 +937,15 @@ class Metalink(object):
         for url in 'publisher_url license_url origin screenshot logo'.split():
             if getattr(self, url).strip() != "":
                 if not self.validate_url(getattr(self, url)):
-                    self.errors.append("Invalid URL: " + getattr(self, url) + '.')
-        for d in [self.pubdate, self.refreshdate]:
-            if d.strip() != "":
-                _d = re.sub(r' (GMT|\+0000)$', '', d)
-                try:
-                    time.strptime(_d, "%a, %d %b %Y %H:%M:%S")
-                except ValueError, e:
-                    self.errors.append("Date must be of format RFC 822: %s" % d)
+                    self.errors.append("Invalid %s%s: %s." % (url, url[-4:] != '_url' and ' URL' or '', getattr(self, url)))
+        for d in 'pubdate refreshdate releasedate'.split():
+            if not check_rfc822_date(getattr(self, d)):
+                self.errors.append("%s must be of format RFC 822: %s" % (d, getattr(self, d)))
         if self.type.strip() != "":
-            if self.type not in ["dynamic", "static"]:
+            if self.type.lower() not in ["dynamic", "static"]:
                 self.errors.append("Type must be either dynamic or static.")
         if self.upgrade.strip() != "":
-            if self.upgrade not in ["install", "uninstall, reboot, install", "uninstall, install"]:
+            if self.upgrade.lower().replace(' ', '') not in ["install", "uninstall,reboot,install", "uninstall,install"]:
                 self.errors.append('Upgrade must be "install", "uninstall, reboot, install", or "uninstall, install".')
 
         valid_files = True
@@ -817,10 +964,10 @@ class Metalink(object):
         return self.file.validate_url(url)
 
     def generate(self, filename='', add_p2p=True):
-        text = '<?xml version="1.0" encoding="utf-8"?>\n'
+        text = '<?xml version="1.0" encoding="utf-8"?>' + os.linesep
         origin = ""
         if self.url_prefix:
-            text += '<?xml-stylesheet type="text/xsl" href="%smetalink.xsl"?>\n' % self.url_prefix
+            text += '<?xml-stylesheet type="text/xsl" href="%smetalink.xsl"?>%s' % (self.url_prefix, os.linesep)
             if not self.origin:
                 if filename and filename is not True:
                     metalink = os.path.basename(filename)
@@ -839,13 +986,14 @@ class Metalink(object):
         type = ""
         if self.type.strip() != "":
             type = 'type="'+self.type+'" '
-        text += '<metalink version="3.0" ' + origin + type + 'pubdate="' + pubdate + refreshdate + '" generator="Metalink Editor version ' + current_version + '" xmlns="http://www.metalinker.org/">\n'
+        _generator = self.generator and self.generator or generator
+        text += '<metalink version="3.0" ' + origin + type + 'pubdate="' + pubdate + refreshdate + '" generator="' + _generator + '" xmlns="http://www.metalinker.org/">' + os.linesep
         text += self.generate_info()
-        text += "  <files>\n"
+        text += "  <files>" + os.linesep
         # Add multi-file torrent information
         text += generate_verification_and_resources(self, add_p2p, [], False)
         text_start = text
-        text_end = '  </files>\n'
+        text_end = '  </files>' + os.linesep
         text_end += '</metalink>'
 
         text_files = ''
@@ -863,13 +1011,22 @@ class Metalink(object):
             if filename is True:
                 filename = (self.filename_absolute or self.file.filename) + '.metalink'
             # Create backup
-            if os.path.isfile(filename):
+            if os.path.isfile(filename) and not _opts['overwrite']:
                 filename += '.new'
                 # os.rename(filename, filename + '.bak')
-            fp = open(filename, "w")
+            fp = open(filename, "wb")
             fp.write(data)
             fp.close()
             print 'Generated:', filename
+
+            if _opts['create_torrent']:
+                torrent = filename.endswith('.new') and filename[:-4] or filename
+                torrent = (torrent.endswith('.metalink') and torrent[:-9] or torrent) + '.torrent'
+                if os.path.isfile(torrent) and not _opts['overwrite']:
+                    torrent += '.new'
+                _errors = self.create_torrent(_opts['create_torrent'], torrent)
+                if _errors:
+                    print 'ERROR while generating %s:\n%s' % (torrent, "\n".join(_errors))
             return True
         return data
 
@@ -877,29 +1034,29 @@ class Metalink(object):
         text = ""
         # Publisher info
         if self.publisher_name.strip() != "" or self.publisher_url.strip() != "":
-            text += '  <publisher>\n'
+            text += '  <publisher>' + os.linesep
             if self.publisher_name.strip() != "":
-                text += '    <name>' + self.publisher_name + '</name>\n'
+                text += '    <name>' + self.publisher_name + '</name>' + os.linesep
             if self.publisher_url.strip() != "":
-                text += '    <url>' + self.publisher_url + '</url>\n'
-            text += '  </publisher>\n'
+                text += '    <url>' + self.publisher_url + '</url>' + os.linesep
+            text += '  </publisher>' + os.linesep
         # License info
         if self.license_name.strip() != "" or self.license_url.strip() != "":
-            text += '  <license>\n'
+            text += '  <license>' + os.linesep
             if self.license_name.strip() != "":
-                text += '    <name>' + self.license_name + '</name>\n'
+                text += '    <name>' + self.license_name + '</name>' + os.linesep
             if self.license_url.strip() != "":
-                text += '    <url>' + self.license_url + '</url>\n'
-            text += '  </license>\n'
+                text += '    <url>' + self.license_url + '</url>' + os.linesep
+            text += '  </license>' + os.linesep
         # Release info
         for attr in 'identity version copyright description logo releasedate screenshot upgrade changelog'.split():
             if "" != getattr(self, attr).strip():
-                text += "  <%s>%s</%s>\n" % (attr, escape(getattr(self, attr)), attr)
+                text += "  <%s>%s</%s>%s" % (attr, escape(getattr(self, attr)), attr, os.linesep)
         if self.tags:
-            text += '  <tags>' + ','.join(unique(self.tags)) + "</tags>\n"
+            text += '  <tags>' + ','.join(unique(self.tags)) + "</tags>" + os.linesep
         return text
 
-    def load_file(self, filename):
+    def load_file(self, filename, overwrite_with_opts=True):
         try:
             doc = parse(filename)
         except:
@@ -917,8 +1074,11 @@ class Metalink(object):
                 self.license_url = self.get_tagvalue(license, "url")
             for attr in 'identity version copyright description logo releasedate screenshot upgrade changelog'.split():
                 setattr(self, attr, self.get_tagvalue(doc, attr))
-            tags = self.get_tagvalue(doc, "tags").split(',')
-            self.tags = unique([tag.strip() for tag in tags if tag.strip()])
+            self.tags = split_values(self.get_tagvalue(doc, "tags"))
+
+            if overwrite_with_opts:
+                self.apply_command_line_options()
+
             files = self.get_tag(doc, "files")
             if files is None:
                 raise Exception("Failed to parse metalink. Found no <files></files> tag.")
@@ -932,8 +1092,7 @@ class Metalink(object):
                 # TODO: self.file.relations = self.get_tagvalue(file, "relations")
                 if self.version == "":
                     self.version = self.file.version
-                tags = self.get_tagvalue(file, "tags").split(',')
-                self.file.tags = unique([tag.strip() for tag in tags if tag.strip()])
+                self.file.tags = split_values(self.get_tagvalue(file, "tags"))
                 self.file.hashes.filename = os.path.basename(self.file.filename)
                 verification = self.get_tag(file, "verification")
                 if verification is not None:
@@ -1227,13 +1386,115 @@ class Torrent(object):
                         self.files.append(('/'.join(name + f['path']), f['length']))
 
             self.piecelength = info['piece length']
-            pieces = info['pieces']
-            if len(pieces) and len(pieces) % 20 == 0:
-                def divide(seq, size):
-                    return [seq[i:i+size]  for i in xrange(0, len(seq), size)]
-                self.pieces = [binascii.hexlify(piece) for piece in divide(pieces, 20)]
+
+            # Only decoding of single-file torrents is possible
+            if len(self.files) == 1:
+                self.pieces = self.decode_pieces(info['pieces'])
 
         return root
+
+    def decode_pieces(self, pieces):
+        if isinstance(pieces, str) and len(pieces) and len(pieces) % 20 == 0:
+            def divide(seq, size):
+                return [seq[i:i+size]  for i in xrange(0, len(seq), size)]
+            return [binascii.hexlify(piece) for piece in divide(pieces, 20)]
+        return []
+
+    def encode_pieces(self, pieces):
+        if isinstance(pieces, list) and len(pieces):
+            return "".join([binascii.unhexlify(piece) for piece in pieces])
+        return ''
+
+    def create(self, data, filename=''):
+        errors = []
+
+        # Check given data
+        if not 'files' in data:
+            errors.append('files not found in torrent data')
+        elif not isinstance(data['files'], list):
+            errors.append('files must be a list of files')
+        elif len(data['files']) != 1:
+            errors.append('files must contain only a single file at the moment')
+        else:
+            for file in data['files']:
+                if not isinstance(file, list) or len(file) != 2 or not isinstance(file[0], basestring) or not isinstance(file[1], (int, long)):
+                    errors.append('elements of files must be a list of file data (name, size)')
+                    break
+
+        if not 'piece length' in data:
+            errors.append('piece length not found in torrent data')
+        elif not isinstance(data['piece length'], (int, long)) or not data['piece length']:
+            errors.append('piece length must be a number')
+
+        if not 'pieces' in data:
+            errors.append('pieces not found in torrent data')
+        elif not isinstance(data['pieces'], list) or not data['pieces']:
+            errors.append('pieces must be a non-empty list')
+
+        if not 'trackers' in data:
+            errors.append('trackers not found in torrent data')
+        elif not isinstance(data['trackers'], (basestring, list)):
+            errors.append('trackers must be passed as string or list of tracker groups')
+        elif isinstance(data['trackers'], basestring):
+            trackers = split_values(data['trackers'], True, ',', ' ')
+        else:
+            trackers = data['trackers']
+
+        if 'trackers' not in locals():
+            pass
+        elif not trackers:
+            errors.append('list of trackers must not be empty')
+        else:
+            for tracker_group in trackers:
+                if not isinstance(tracker_group, list) or not tracker_group:
+                    errors.append('elements of trackers must be a list of tracker URLs (tracker group)')
+                    break
+                for tracker in tracker_group:
+                    if not isinstance(tracker, basestring) or len(tracker) < 10:
+                        errors.append('elements of tracker groups must be strings')
+                        break
+
+        for key in 'created by,comment'.split(','):
+            if key in data and not isinstance(data[key], basestring):
+                errors.append('%s must be a string' % key)
+
+        if not filename and not self.filename:
+            errors.append('no output filename given')
+
+        if errors:
+            return errors
+
+        # Create torrent
+        root = {}
+        for key in 'created by,comment'.split(','):
+            if key in data and len(data[key]) > 2:
+                root[key] = encode_text(data[key])
+
+        root['announce'] = trackers[0][0]
+        if len(trackers) > 1 or len(trackers[0]) > 1:
+            root['announce-list'] = trackers
+
+        # At the moment only single-file torrents can be created because of missing pieces hashing for multi-file torrents
+        # Multiple-file torrents may contain subdirectories (so no basename!)
+        root['info'] = {}
+        file = data['files'][0]
+        root['info']['name'] = encode_text(os.path.basename(file[0]))
+        root['info']['length'] = file[1]
+        root['info']['piece length'] = data['piece length']
+        root['info']['pieces'] = self.encode_pieces(data['pieces'])
+
+        root['creation date'] = int(time.time())
+
+        # Write file
+        file = filename or self.filename
+        if os.path.isfile(file) and not _opts['overwrite']:
+            file += '.new'
+        fp = open(file, "wb")
+        fp.write(self.bencode(root))
+        fp.close()
+        print 'Generated:', file
+
+        return []
 
     def bdecode(self):
         c = self.data[self.pos]
@@ -1263,7 +1524,7 @@ class Torrent(object):
             return i
         if c.isdigit():
             return self._process_string()
-        raise 'Invalid bencoded string'
+        raise TypeError('Invalid bencoded string')
 
     def _process_string(self):
         pos = self.data.find(':', self.pos)
@@ -1275,6 +1536,34 @@ class Torrent(object):
 
     def _is_end(self):
         return self.data[self.pos] == 'e'
+
+    def bencode(self, x):
+        from cStringIO import StringIO
+        s = StringIO()
+        self._bencode_value(x, s)
+        return s.getvalue()
+
+    def _bencode_value(self, x, s):
+        t = type(x)
+        if t in (int, long, bool):
+            s.write('i%de' % x)
+        elif isinstance(x, basestring):
+            s.write('%d:%s' % (len(x), x))
+        elif t in (list, tuple):
+            s.write('l')
+            for e in x:
+                self._bencode_value(e, s)
+            s.write('e')
+        elif t is dict:
+            s.write('d')
+            keys = x.keys()
+            keys.sort()
+            for k in keys:
+                self._bencode_value(k, s)
+                self._bencode_value(x[k], s)
+            s.write('e')
+        else:
+            raise TypeError('Unsupported data type to bencode: %s' % t.__name__)
 
 class Mirrors(object):
     def __init__(self, filename='', url=''):
@@ -1408,6 +1697,7 @@ class Hashes(object):
         self.files = []
 
     def init(self):
+        self.pieces = []
         self.hashes = {}
         for hash in self.verification_hashes.split():
             self.hashes[hash] = {}
@@ -1447,7 +1737,7 @@ class Hashes(object):
                 for _type, length in {'ED2K':32, 'AICH':32, 'BTIH':40}.items():
                     if _type == type:
                         if len(hash) != length:
-                            print 'Invalid %s hash: %s' % (type, line)
+                            print 'Invalid %s hash: %s' % (type, line.strip())
                         elif not force_type or force_type.upper() == _type:
                             self.hashes[_type.lower()][name] = hash
                             count += 1
@@ -1604,6 +1894,199 @@ class Hashes(object):
 
     def __contains__(self, hash):
         return self.has(hash)
+
+class OptParser(object):
+    def __init__(self, long_options = []):
+        self.opts = {}
+        self._opts = {}
+        self._positions = []
+        self.errors = []
+
+        self.init(long_options)
+
+    def addError(self, msg):
+        if not msg in self.errors:
+            self.errors.append(msg)
+
+    def parseValue(self, val, is_bool=False, inverse=False):
+        if not is_bool: return val
+        if val is None: return not inverse
+        value = val.strip().lower()
+        if value in '1 True yes y on enable'.split():
+            return not inverse
+        if value in '0 False no n off disable'.split():
+            return inverse
+        return val
+
+    def getOpt(self, opt):
+        if not opt in self.opts:
+            self.addError("Option '%s' is unknown" % opt)
+            return [None, False, 0]
+        _opt = self._opts[self.opts[opt]]
+        is_bool = 'bool' == _opt['type']
+        required = _opt['required']
+        return [_opt, is_bool, required]
+
+    def cmp_option_length(self, a, b):
+        len_a = len(a)
+        len_b = len(b)
+        if len_a != len_b:
+            return cmp(len_a, len_b)
+        return cmp(a, b)
+
+    def getHelp(self):
+        help = ''
+        _options = []
+        _len = 0
+        for key in self._positions:
+            option = self._opts[key]
+            _opt = []
+            for opt in sorted(option['options'], self.cmp_option_length):
+                _opt.append('%s%s' % (len(opt) > 1 and '--' or '-', opt))
+            _opt = ', '.join(_opt)
+            if option['explanation'] and option['required']:
+                _opt += '%s=%s%s' % (1 != option['required'] and '[' or '', option['explanation'], 1 != option['required'] and ']' or '')
+            _options.append((_opt, option['help'] + "\n")) # TODO: os.linesep
+            if len(_opt) > _len: _len = len(_opt)
+        _len += 2
+        for key, option in _options:
+            help += ' ' + key.ljust(_len) + option
+        return help
+
+    # options string|array String means short options, dict means ZendFramework like long options
+    # ['file|f=sFILE'=>'Input file (-: use STDIN)']
+    def init(self, options = []):
+        if not isinstance(options, list):
+            return False
+        for i in range(0, len(options), 2):
+            _long, help = options[i:i+2]
+            # Only associative array keys allowed
+            if isinstance(_long, (int, long)) or _long.isdigit(): continue
+            _long = _long.strip()
+            if '' == _long: continue
+
+            required = 0
+            _type = 'bool'
+            explanation = ''
+            match = re.search('(=|-)([isw])(.+)?', _long)
+            if match:
+                _long = _long[:match.start()]
+                match = match.groups()
+                required = '=' == match[0] and 1 or 2
+                _type = 'i' == match[1] and 'int' or 'string'
+                explanation = match[2] is not None and match[2] or ''
+            opts = unique(_long.split('|'))
+            self._positions.append(_long)
+
+            for opt in opts:
+                # Overwrite existing short options
+                if len(opt) == 1 and opt in self._opts:
+                    del self._opts[opt]
+                self.opts[opt] = _long
+            self._opts[_long] = {'type':_type, 'required':required, 'help':help, 'explanation':explanation, 'options':opts}
+        return True
+
+    def parse(self, args, convert_hyphen=True):
+        stdin = False
+        opts     = {}
+        non_opts = []
+        # Predefine empty values
+        for option in self._opts.values():
+            for opt in option['options']:
+                opts[convert_hyphen and opt.replace('-', '_') or opt] = None
+
+        if not args:
+            return [opts, non_opts, stdin, []]
+
+        # args = list(args)
+
+        length = len(args)
+        skip = False
+        for i, arg in enumerate(args):
+            if skip:
+                skip = False
+                continue
+
+            arg = arg.strip()
+            if arg == '': continue
+            if arg[0] != '-':
+                non_opts.append(arg)
+            elif arg == '-':
+                stdin = True
+            elif arg == '--':
+                self.addError("Unknown option '--'")
+            elif len(arg) > 1 and arg[1] == '-':
+                opt = arg[2:]
+                value = None
+                has_value = '=' in arg
+                if has_value:
+                    opt, value = opt.split('=', 2)
+                if not has_value and opt in self.opts and self._opts[self.opts[opt]]['required'] and i < length - 1 and (0 == len(args[i+1]) or '-' != args[i+1][0]):
+                    has_value = True
+                    value = args[i+1]
+                    skip = True
+
+                default = True
+                if not opt in self.opts and re.match('^(disable|no)-', opt):
+                    opt = opt[re.match('^(disable|no)-', opt).end():]
+                    default = False
+                _opt, is_bool, required = self.getOpt(opt)
+                if not _opt: continue
+                if is_bool:
+                    value = self.parseValue(value, is_bool, not default)
+                if not required and has_value and (not is_bool or not isinstance(value, bool)):
+                    self.addError("--%s allows no value" % opt)
+                elif 1 == required and not has_value:
+                    self.addError("--%s requires a value" % opt)
+                elif not has_value:
+                    value = default
+                if value is not None:
+                    for option in _opt['options']:
+                        opts[convert_hyphen and option.replace('-', '_') or option] = value
+            else:
+                # Parse short option
+                default = True
+                if re.match('^-(disable|no)-', arg):
+                    arg = arg[re.match('^-(disable|no)-', arg).end() - 1:]
+                    default = False
+                opt = ''
+                _len = len(arg)
+                for j in range(1, _len):
+                    if arg[j] == '=':
+                        if _opt:
+                            if required:
+                                if _len - 1 == j:
+                                    value = ''
+                                else:
+                                    value = self.parseValue(arg[j+1:], is_bool, not default)
+                                for option in _opt['options']:
+                                    opts[option] = value
+                            else:
+                                self.addError("-%s allows no value" % opt)
+                        break
+                    opt = arg[j]
+                    _opt, is_bool, required = self.getOpt(opt)
+                    if not _opt: continue
+                    value = default
+                    if j < _len - 1 and '=' == arg[j+1]:
+                        if j == _len - 2:
+                            value = ''
+                        else:
+                            value = self.parseValue(arg[j+2:], is_bool, not default)
+                    elif required and j == _len - 1 and i < length - 1 and (0 == len(args[i+1]) or '-' != args[i+1][0]):
+                        value = self.parseValue(args[i+1], is_bool, not default)
+                        skip = True
+                    if 1 == required and is_bool(value) and not is_bool:
+                        self.addError("-%s requires a value" % opt)
+                    else:
+                        for option in _opt['options']:
+                            opts[option] = value
+
+        return [opts, non_opts, stdin, self.errors]
+
+def doGetopt(args, long_options=[]):
+    optParser = OptParser(long_options)
+    return optParser.parse(args)
 
 
 if __name__ == '__main__':
