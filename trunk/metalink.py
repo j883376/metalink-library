@@ -20,7 +20,7 @@
 #    along with this program; if not, write to the Free Software
 #    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
-import binascii, glob, math, md5, os, re, sha, sys, time, urllib, urlparse, xml.dom
+import binascii, datetime, glob, math, os, re, sys, time, urllib, urlparse, xml.dom
 from xml.dom.minidom import parse, Node
 from xml.sax.saxutils import escape
 
@@ -592,6 +592,9 @@ class Metafile(object):
             hashes['sha1'] = hashlib.sha1()
             hashes['sha256'] = hashlib.sha256()
         except:
+            # Import deprecated modules
+            import md5
+            import sha
             # Try old MD4 lib
             try:
                 import Crypto.Hash.MD4
@@ -2020,7 +2023,7 @@ class OptParser(object):
                 value = None
                 has_value = '=' in arg
                 if has_value:
-                    opt, value = opt.split('=', 2)
+                    opt, value = opt.split('=', 1)
                 if not has_value and opt in self.opts and self._opts[self.opts[opt]]['required'] and i < length - 1 and (0 == len(args[i+1]) or '-' != args[i+1][0]):
                     has_value = True
                     value = args[i+1]
@@ -2076,7 +2079,7 @@ class OptParser(object):
                     elif required and j == _len - 1 and i < length - 1 and (0 == len(args[i+1]) or '-' != args[i+1][0]):
                         value = self.parseValue(args[i+1], is_bool, not default)
                         skip = True
-                    if 1 == required and is_bool(value) and not is_bool:
+                    if 1 == required and isinstance(value, bool) and not is_bool:
                         self.addError("-%s requires a value" % opt)
                     else:
                         for option in _opt['options']:
