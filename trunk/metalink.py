@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: iso-8859-15 -*-
 #
-#    Copyright (c) 2007 René Leonhardt, Germany.
+#    Copyright (c) 2007-2009 René Leonhardt, Germany.
 #    Copyright (c) 2007 Hampus Wessman, Sweden.
 #
 #    Website: http://code.google.com/p/metalink-library/
 #
 #    This program is free software; you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation; either version 2 of the License, or
+#    it under the terms of the GNU Lesser General Public License as published
+#    by the Free Software Foundation; either version 2.1 of the License, or
 #    (at your option) any later version.
 #
 #    This program is distributed in the hope that it will be useful,
@@ -16,27 +16,21 @@
 #    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #    GNU General Public License for more details.
 #
-#    You should have received a copy of the GNU General Public License
-#    along with this program; if not, write to the Free Software
-#    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+#    You should have received a copy of the GNU Lesser General Public License
+#    along with this program; if not, write to the Free Software Foundation,
+#    Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 import binascii, datetime, glob, math, os, re, sys, time, urllib, urlparse, xml.dom
 from xml.dom.minidom import parse, Node
 from xml.sax.saxutils import escape
 
-# Optional speed improvement
-try:
-    import psyco
-    psyco.full()
-except ImportError:
-    pass
 
 # Globals
-current_version = "1.1"
+current_version = "1.2"
 generator="Metalink Library %s" % current_version
 fs_encoding = sys.getfilesystemencoding()
 preference_ed2k = "95"
-verbose = False
+verbose = None
 # Command-line options
 _opts = {}
 
@@ -51,15 +45,19 @@ def usage_and_exit(error_msg=None, options=''):
     print >> stream, "Metalink Library %s by Rene Leonhardt and Hampus Wessman" % current_version
     if error_msg is False: sys.exit()
 
+    params = [progname] * 14
+    params.append(options and "\n\nOptions:\n" + options or '')
+
     print >> stream, """
 Usage: %s [FILE|DIRECTORY]...
 
-Create Metalink and BitTorrent files by parsing download files.
+Create Metalink and BitTorrent files by parsing download files and mirror URLs.
 Helper files will be searched and parsed automatically:
 .metalink, .torrent, .mirrors, .md5, .sha1, .sha256 (sum, SUMS), .sig.
-Glob wildcard expressions are allowed for filenames (openproj-0.9.6*).
+Glob wildcard expressions are allowed for filenames (openproj-1.4*).
 Torrents will only be created for single files with chunks (parsed or scanned).
 Chunks will only be imported from single-file torrents.
+Automatic mirror parsing for SourceForge, Eclipse, MySQL and PostgreSQL URLs.
 
 
 Examples:
@@ -75,16 +73,56 @@ Examples:
 %s directory
 
 # Upgrade to new release with single metalink template.
-%s --version=1.1 file-1.0.zip.metalink file-1.1*
+# In addition, generate gzip compressed files to save server bandwidth.
+%s --version=1.1 file-1.0.zip.metalink file-1.1* --compress-gzip
 
 # Update file-1.0*.metalink files with new version number 1.1,
 # parse file-1.1* and file-1.1*.torrent and generate file-1.1*.metalink.
 %s --version=1.1 file-1.0*.metalink
 
+# Update version number in existing SourceForge .metalink files (including filename and mirrors),
+# remove hashes and P2P mirrors and create phpMyAdmin-3.1.4-*.metalink.
+%s phpMyAdmin-3.1.3-*.metalink --version=3.1.4
+
+# If the metalink files were generated without --version, you still can update the version
+# information in filenames and mirrors by providing the old version number.
+%s phpMyAdmin-3.1.3-*.metalink --version=3.1.4 --old-version=3.1.3
+
+# After downloading, a BitTorrent file can easily be generated in a second command-line run:
+# Parse finished download, update .metalink with hashes, piece checksums and P2P links and create .torrent.
+%s openproj-1.4.zip.metalink --overwrite --create-torrent=http://example.tracker.org/announce
+
 # Define URL prefix to save the original .metalink download URL:
 # http://openoffice.org/url/prefix/file1.metalink
 %s http://openoffice.org/url/prefix/ file1
-%s""" % (progname, progname, progname, progname, progname, progname, options and "\n\nOptions:\n" + options or ''),
+
+
+# Mirror mode: create openproj-1.4.zip.metalink with all SourceForge mirrors (static list, no download).
+%s --mirrors=http://downloads.sourceforge.net/openproj/openproj-1.4.zip
+# Or you can even use a direct download link (without mirror selection)
+%s --mirrors=http://superb-west.dl.sourceforge.net/sourceforge/openproj/openproj-1.4.zip
+
+# Download the complete mirror list and create cdt-master-6.0.0.zip.metalink.
+%s --mirrors="http://www.eclipse.org/downloads/download.php?file=/tools/cdt/releases/galileo/dist/cdt-master-6.0.0.zip"
+# Also works for Eclipse links: http://www.eclipse.org/downloads/download.php?file=/technology/epp/downloads/release/galileo/R/eclipse-php-galileo-win32.zip
+
+# Mirror files may contain preference and country values, i.e. ooop.mirrors:
+http://puzzle.dl.sourceforge.net/ooop/
+1 http://mesh.dl.sourceforge.net/ooop/
+au ftp://optusnet.dl.sourceforge.net/sourceforge/o/oo/ooop/
+be 100 http://belnet.dl.sourceforge.net/ooop/
+90 br http://ufpr.dl.sourceforge.net/ooop/
+
+# Append filename automatically to mirrors ending with / and generate several metalink files:
+%s OOo_3.0.1_090128_Win32Intel_install.exe OOo_3.0.1_090128_Win32Intel_install_de.exe ooop.mirrors
+# Generated: OOo_3.0.1_090128_Win32Intel_install.exe.metalink
+# Generated: OOo_3.0.1_090128_Win32Intel_install_de.exe.metalink
+# <url type="http" location="de" preference="1">http://mesh.dl.sourceforge.net/ooop/OOo_3.0.1_090128_Win32Intel_install.exe</url>
+
+# Download and parse mirrors automatically, guess --filename and --filter from URL filename
+%s --mirrors=http://wwwmaster.postgresql.org/download/mirrors-ftp/source/v8.4.0/postgresql-8.4.0.tar.bz2
+# Generated: postgresql-8.4.0.tar.bz2.metalink
+%s""" % tuple(params),
     sys.exit(error_msg and 1 or 0)
 
 def get_first(x):
@@ -95,7 +133,7 @@ def get_first(x):
 
 def check_rfc822_date(date):
     if date.strip() != "":
-        _date = re.sub(r' (GMT|\+0000)$', '', date)
+        _date = re.sub(r' (\+0000|GMT|UTC?|Z)$', '', date)
         try:
             time.strptime(_date, "%a, %d %b %Y %H:%M:%S")
         except ValueError, e:
@@ -125,9 +163,12 @@ def split_values(value_list, return_array=True, separator=',', separator2=''):
 # Uses compression if available
 # HINT: Use httplib2 if possible
 def get_url(url):
+    if not url:
+        return ''
+
     import urllib2
 
-    headers = {'Accept-encoding': 'gzip;q=1.0, deflate;q=0.9, identity;q=0.5', 'User-agent': 'Mozilla/5.0 (X11; U; Linux i686; de; rv:1.8.1.7) Gecko/20070914 Firefox/2.0.0.7'}
+    headers = {'Accept-encoding': 'gzip;q=1.0, deflate;q=0.9, identity;q=0.5', 'User-agent': 'Mozilla/5.0 (X11; U; Linux x86_64; de; rv:1.9.1) Gecko/20090701 Ubuntu/9.04 (jaunty) Firefox/3.5'}
     req = urllib2.Request(url, '', headers)
 
     def uncompress(page):
@@ -150,12 +191,14 @@ def get_url(url):
         f = urllib2.urlopen(req)
         return uncompress(f)
     except Exception, e: # urllib2.URLError
-        print 'Download error:', e
+        print >> sys.stderr, 'Download error:', e
 
     return ''
 
-def unique(seq):
+def unique(seq, key=None, range=None):
     d = {}
+    if key is not None:
+        return [d.setdefault(e[key],range and e[range[0]:range[1]] or e) for e in seq if e[key] not in d]
     return [d.setdefault(e,e) for e in seq if e not in d]
 
 def generate_verification_and_resources(self, add_p2p=True, protocols=[], is_child=True):
@@ -225,24 +268,50 @@ def is_url(url):
     u = urlparse.urlparse(url, '', False)
     if not (u[0] and u[1] and u[2]):
         return 0
-    _is_url = u[0] in 'http https ftp ftps'.split() and u[1] and u[2] and not (u[3] or u[4])
+    _is_url = u[0] in 'http https ftp ftps'.split() and u[1] and u[2]
     if not _is_url:
         return 0
-    return url[-1] == '/' and 1 or 2
+    return u[2][-1] == '/' and 1 or 2
+
+# Create a gzip compressed file from data (use highest compression=9)
+def compress_file(outfile, data, read_file=False):
+    try:
+        import gzip
+        zfile = gzip.GzipFile(outfile, 'wb')
+        if read_file:
+            infile = open(data, 'rb')
+            data = infile.read()
+            infile.close()
+        zfile.write(data)
+        zfile.close()
+        return True
+    except:
+        return False
 
 def main(args=[]):
     global _opts, verbose
+    if isinstance(args, basestring):
+        args = [args]
+
+    # Optional speed improvement
+    try:
+        import psyco
+        psyco.full()
+    except ImportError:
+        pass
 
     # Read arguments and options
-    optParser = OptParser(['create-torrent=sURLs','Create torrent with given tracker URLs (comma separates groups, space separates group members: "t1, t2a t2b")', 'overwrite','Overwrite existing files (otherwise append .new)', 'template|t=sFILE','Metalink template file', 'url-prefix=sURL','URL prefix (where metalink should be placed online)', 'verbose|v','Verbose output', 'V','Show program version and exit', 'help|h','Print this message and exit\n\nMetalink options:',
+    optParser = OptParser(['compress-gzip','Generate gzip compressed files (.metalink.gz, .torrent.gz) in addition to save server bandwidth', 'create-torrent=sURLs','Create torrent with given tracker URLs (comma separates groups, space separates group members: "t1, t2a t2b")', 'create-torrent-only=sURLs','The same as --create-torrent, but do not generate Metalink files', 'directory|d=sDIRECTORY','Use output directory (instead of input file directory or current directory)', 'filename=sTEXT','Relative file path to append to mirror list', 'filter=sTEXT','Filter mirror URLs by a search text', 'filter-regex=sTEXT','Filter mirror URLs by a regular expression', 'filter-from=sTEXT','Parse mirror urls after (and including) regular expression', 'filter-to=sTEXT','Parse mirror urls until (and including) regular expression', 'mirrors=sURL|FILE','Parse URL or file for mirrors (special support for SourceForge and Eclipse)', 'old-version=sTEXT','Old version to replace by --version (only necessary if no old version information is available)', 'overwrite','Overwrite existing files (otherwise append .new)', 'preference=sTEXT','Set default preference (1-100), extended: http=80,ftp=90,bittorrent=100', 'recursive|R-sFILE PATTERN','Parse directories recursively', 'template|t=sFILE','Metalink template file', 'url-prefix=sURL','URL prefix (where metalink should be placed online)', 'verbose|v','Verbose output', 'V','Show program version and exit', 'help|h','Print this message and exit\n\nMetalink options:',
         'changelog=sTEXT','Changelog',
         'copyright=sTEXT','Copyright',
         'description=sTEXT','Description',
         'identity=sTEXT','Identity',
+        'language=sISO-CODE','ISO-639/3166 code of language (en-US)',
         'license-name=sTEXT','Name of the license',
         'license-url=sURL','URL of the license',
         'logo=sURL','Logo URL',
         'origin=sURL','Absolute or relative URL to this metalink file (online)',
+        'os=sOS','Operating system ("Source", "Linux-x86", ...)',
         'publisher-name=sTEXT','Name of the publisher',
         'publisher-url=sURL','URL of the publisher',
         'refreshdate=sDATE','RFC 822 date of refresh (for type "dynamic")',
@@ -252,7 +321,7 @@ def main(args=[]):
         'type=sTEXT','Type of this metalink file ("dynamic" or "static")',
         'upgrade=sTYPE','Upgrade type ("install", "uninstall, reboot, install" or "uninstall, install")',
         'version=sTEXT','Version of the file'])
-    _args = sys.argv[1:]
+    _args = args + sys.argv[1:]
     _opts, args, stdin, errors = optParser.parse(_args)
 
     if _opts['verbose'] is not None:
@@ -266,13 +335,13 @@ def main(args=[]):
     # TODO: check rest of _opts
     _opts['tags'] = split_values(_opts['tags'], False)
 
-    new_version = ''
-    url_prefix = ''
     files = {}
+    files_not_found = []
     files_skipped = []
     m = Metalink()
 
     _files = []
+    _directories = []
     _hashes = {}
     _hashes_general = Hashes()
     _metalinks = {}
@@ -284,20 +353,32 @@ def main(args=[]):
 
     if _opts['template'] and os.path.isfile(_opts['template']):
         _files.append(_opts['template'])
-    if _opts['url_prefix']:
-        url_prefix = _opts['url_prefix']
-    if _opts['version']:
-        new_version = _opts['version']
-    if _opts['create_torrent']:
+    if _opts['url_prefix'] and 1 != is_url(_opts['url_prefix']):
+        _opts['url_prefix'] = False
+    if _opts['create_torrent_only']:
+        _opts['create_torrent'] = split_values(_opts['create_torrent_only'], True, ',', ' ')
+    elif _opts['create_torrent']:
         _opts['create_torrent'] = split_values(_opts['create_torrent'], True, ',', ' ')
+    if _opts['mirrors'] and re.search(r'\s', _opts['mirrors']):
+        _opts['mirrors'] = [_mirror for _mirror in re.split(r'\s+', _opts['mirrors']) if is_url(_mirror)]
+    elif _opts['mirrors'] and not (is_url(_opts['mirrors']) or os.path.isfile(_opts['mirrors'])):
+        _opts['mirrors'] = False
+    if _opts['preference']:
+        preferences = split_values(_opts['preference'], True, ',', '=')
+        protocols = m.supported_protocols()
+        p1 = [p for p in preferences if len(p) == 1 and p[0].isdigit() and 0 <= int(p[0]) <= 100]
+        p2 = [p for p in preferences if len(p) == 2 and p[1].isdigit() and p[0] in protocols and 0 <= int(p[1]) <= 100]
+        if p1 or p2:
+            _opts['preference'] = {}
+            if p1: _opts['preference'] = dict([ [p, p1[-1][0] ] for p in protocols])
+            for p in p2: _opts['preference'][p[0]] = p[1]
+        else:
+            _opts['preference'] = False
 
     # Search files and url_prefix
     for arg in args:
         if os.path.isdir(arg):
-            for file in [file for file in glob.glob('%s%s*' % (os.path.realpath(arg), os.sep)) if os.path.isfile(file)]:
-                _files.append(file)
-                # Search parallel helper files
-                _files.extend(m.find_helper_files(file))
+            _directories.append(arg)
         elif os.path.isfile(arg):
             file = os.path.realpath(arg)
             _files.append(file)
@@ -305,16 +386,36 @@ def main(args=[]):
             _files.extend(m.find_helper_files(file))
         elif is_url(arg):
             if 1 == is_url(arg):
-                url_prefix = arg
+                if not _opts['url_prefix']:
+                    _opts['url_prefix'] = arg
             else:
                 # Add mirror
                 _mirrors_general.parse('', arg)
         else:
             # Try glob expression (wildcards)
-            for file in [file for file in glob.glob(arg) if os.path.isfile(file)]:
+            for file in glob.glob(arg):
+                if os.path.isfile(file):
+                    _files.append(file)
+                    # Search parallel helper files
+                    _files.extend(m.find_helper_files(file))
+                elif os.path.isdir(file):
+                    _directories.append(arg)
+            else:
+                files_not_found.append(arg)
+    if files_not_found:
+        _set_opt('filename', files_not_found[0])
+
+    if _opts['recursive'] and not _directories:
+        _directories.append('.')
+
+    for directory in _directories:
+        for root, dirs, filenames in os.walk(os.path.realpath(directory)):
+            for file in [os.path.join(root, file) for file in filenames]:
                 _files.append(file)
                 # Search parallel helper files
                 _files.extend(m.find_helper_files(file))
+            if not _opts['recursive']: break
+
     _files = unique(_files)
 
     # Categorize and filter files (hashes, mirrors, torrents, signatures)
@@ -349,23 +450,51 @@ def main(args=[]):
 
     if files_skipped:
         files_skipped.sort()
-        print >>sys.stderr, "Skipped the following files:\n%s" % "\n".join(files_skipped)
+        print >> sys.stderr, "Skipped the following files:\n%s" % "\n".join(files_skipped)
 
     # Metalink update mode
     if not files and len(_metalinks):
-        print 'Metalink update mode (apply options and create torrents)'
+        if verbose is not False: print 'Metalink update mode (apply options and create torrents)'
         for filename, file in _metalinks.items():
             m = Metalink(False)
             m.load_file(file, False)
 
-            if m.version and m.version != new_version:
-                m.change_filename(new_version, m.version)
-                new_file = os.path.dirname(file) + os.sep + filename.replace(m.version, new_version) + '.metalink'
+            if _opts['version']:
+                new_version = _opts['version']
+            else:
+                new_version = m.version
+
+            if _opts['old_version']:
+                old_version = _opts['old_version']
+            else:
+                old_version = m.version
+
+            if old_version and old_version != new_version:
+                new_file = (os.path.dirname(file) and os.path.dirname(file) + os.sep or '') + filename.replace(old_version, new_version) + '.metalink'
             else:
                 new_file = file
 
-            # Parse parallel files
+            # Parse mirrors before changing filename
             local_file = new_file[:-9]
+            mirrors = local_file + '.mirrors'
+            if os.path.isfile(mirrors):
+                m.parse_mirrors(mirrors)
+            elif len(_mirrors) == 1:
+                m.parse_mirrors(_mirrors.values().pop())
+            elif os.path.basename(local_file) in _mirrors:
+                m.parse_mirrors(_mirrors[os.path.basename(local_file)])
+            elif _opts['mirrors']:
+                if isinstance(_opts['mirrors'], list):
+                    m.parse_mirrors(data="\n".join(_opts['mirrors']))
+                elif is_url(_opts['mirrors']):
+                    m.parse_mirrors('', _opts['mirrors'])
+                else:
+                    m.parse_mirrors(_opts['mirrors'])
+
+            if old_version != new_version:
+                m.change_filename(new_version, old_version, False)
+
+            # Parse parallel files
             torrent = local_file + '.torrent'
             if os.path.isfile(torrent):
                 m.parse_torrent(torrent)
@@ -375,6 +504,7 @@ def main(args=[]):
             # Force current creation date (may be overwritten by command-line option afterwards)
             m.pubdate = ''
             m.apply_command_line_options()
+
             if os.path.isfile(new_file) and not _opts['overwrite']:
                 new_file += '.new'
             m.generate(new_file)
@@ -389,17 +519,50 @@ def main(args=[]):
         # TODO: Parse general metalink only once
         _metalink_general = _metalinks.pop(filename)
         break
-    for filename in set(_mirrors.keys()).difference(set(files.keys())):
-        _mirrors_general.parse(_mirrors.pop(filename))
+    if files:
+        for filename in set(_mirrors.keys()).difference(set(files.keys())):
+            _mirrors_general.parse(_mirrors.pop(filename))
     for filename in set(_hashes.keys()).difference(set(files.keys())):
         for file in _hashes[filename].values():
             _hashes_general.parse(file)
+
+    # Mirror download mode
+    if len(_mirrors) == 1 and not _opts['mirrors']:
+        _opts['mirrors'] = _mirrors.popitem()[1]
+    if not files and _opts['mirrors']:
+        if not files_not_found:
+            files_not_found.append('')
+        for filename in files_not_found:
+            if filename:
+                _set_opt('filename', filename)
+            if isinstance(_opts['mirrors'], list):
+                m.parse_mirrors(data="\n".join(_opts['mirrors']))
+            elif is_url(_opts['mirrors']):
+                m.parse_mirrors('', _opts['mirrors'])
+            else:
+                m.parse_mirrors(_opts['mirrors'])
+            local_file = m.file.mirrors.get_filename()
+            if m.file.filename and not local_file:
+                local_file = m.file.filename
+            else:
+                m.file.filename = local_file
+            directory = _get_opt('directory')
+            if directory:
+                local_file = directory + os.sep + local_file
+            torrent = local_file + '.torrent'
+            if os.path.isfile(torrent):
+                m.parse_torrent(torrent)
+            if os.path.isfile(local_file):
+                m.scan_file(local_file)
+            m.generate(True)
+            m.reset()
+        return
 
     if not files:
         usage_and_exit(None, optParser.getHelp()) # 'No files to process'
 
     for filename, file in files.items():
-        print 'Processing %s' % file
+        if verbose is not False: print 'Processing %s' % file
         m = Metalink()
 
         # Parse metalink template
@@ -416,11 +579,18 @@ def main(args=[]):
 
         if filename in _mirrors:
             m.clear_res('http ftp https ftps')
-            m.parse_mirrors(_mirrors[filename], '', '', True, True)
+            m.parse_mirrors(_mirrors[filename], '', '', False, True)
             # m.file.mirrors.change_filename(filename)
         elif _mirrors_general.mirrors:
             _mirrors_general.change_filename(filename)
             m.file.mirrors.add(_mirrors_general, True)
+        elif _opts['mirrors']:
+            if isinstance(_opts['mirrors'], list):
+                m.parse_mirrors(data="\n".join(_opts['mirrors']))
+            elif is_url(_opts['mirrors']):
+                m.parse_mirrors('', _opts['mirrors'])
+            else:
+                m.parse_mirrors(_opts['mirrors'])
 
         # Parse torrent files
         if filename in _torrents:
@@ -444,9 +614,7 @@ def main(args=[]):
             # Scan file for remaining hashes
             m.scan_file(file)
 
-        m.url_prefix = url_prefix
         m.generate(True)
-
 
 class Resource(object):
     def __init__(self, url, type="default", location="", preference="", conns=""):
@@ -500,33 +668,14 @@ class Resource(object):
         # TODO: Validate ed2k MD4/AICH and magnet SHA1 hash
         return len(self.errors) == 0
 
+    def __repr__(self):
+        return '%s, %s, %s, %s' % (self.url, self.type, self.location, self.preference)
+
 class Metafile(object):
     def __init__(self):
-        self.changelog = ""
-        self.description = ""
-        self.filename = ""
-        self.identity = ""
-        self.language = ""
-        self.logo = ""
-        self.maxconn_total = ""
-        self.mimetype = ""
-        self.os = ""
-        # TODO: self.relations = "" ?
-        self.releasedate = ""
-        self.screenshot = ""
-        self.signature = ""
-        self.signature_type = ""
-        self.size = ""
-        self.tags = []
-        self.upgrade = ""
-        self.version = ""
-
         self.hashes = Hashes()
         self.mirrors = Mirrors()
-        self.resources = []
-        self.urls = []
-
-        self.errors = []
+        self.reset()
 
     def clear_res(self, types=''):
         if not types.strip():
@@ -538,10 +687,12 @@ class Metafile(object):
             self.urls = [res.url for res in self.resources]
 
     def add_url(self, url, type="default", location="", preference="", conns="", add_to_child=True):
-        if url not in self.urls and self.mirrors.parse_link(url, location, False):
-            self.resources.append(Resource(url, type, location, preference, conns))
-            self.urls.append(url)
-            return True
+        if url not in self.urls:
+            l = self.mirrors.parse_link(url, location, False, preference)
+            if l:
+                self.resources.append(Resource(l[0], l[1], l[2], l[3], conns))
+                self.urls.append(url)
+                return True
         return False
 
     def add_res(self, res):
@@ -572,11 +723,14 @@ class Metafile(object):
             return True
 
         piecelength_ed2k = 9728000
+        # Force maximum size for piece checksums to 512 KiB:
+        # http://en.wikipedia.org/wiki/BitTorrent_(protocol)#Creating_and_publishing_torrents
+        maxlength = 524288
         # Calculate piece length
         if use_chunks:
             minlength = chunk_size*1024
             self.hashes.piecelength = 1024
-            while size / self.hashes.piecelength > max_chunks or self.hashes.piecelength < minlength:
+            while self.hashes.piecelength < maxlength and (size / self.hashes.piecelength > max_chunks or self.hashes.piecelength <= minlength):
                 self.hashes.piecelength *= 2
             if verbose: print "Using piecelength", self.hashes.piecelength, "(" + str(self.hashes.piecelength / 1024) + " KiB)"
             numpieces = size / self.hashes.piecelength
@@ -601,7 +755,7 @@ class Metafile(object):
                 hashes['md4'] = Crypto.Hash.MD4.new()
             except:
                 hashes['md4'] = None
-            print "Hashlib not available. No support for SHA-256%s" % (hashes['md4'] and "." or " and ED2K.")
+            print >> sys.stderr, "Hashlib not available. No support for SHA-256%s" % (hashes['md4'] and "." or " and ED2K.")
             hashes['md5'] = md5.new()
             hashes['sha1'] = sha.new()
             hashes['sha256'] = None
@@ -798,6 +952,8 @@ class Metafile(object):
             self.description = torrent.comment
         self.filename = torrent.files[0][0]
         self.size = str(torrent.files[0][1])
+        if not self.hashes.filename:
+            self.hashes.filename = self.filename
         self.hashes['btih'] = torrent.infohash
         self.hashes.pieces = torrent.pieces
         self.hashes.piecelength = str(torrent.piecelength)
@@ -807,9 +963,15 @@ class Metafile(object):
         return torrent.files
 
     # Call with filename, url or text
-    def parse_mirrors(self, filename='', url='', data='', plain=True, remove_others=False):
+    def parse_mirrors(self, filename='', url='', data='', plain=False, remove_others=False):
+        if filename: filename = filename.strip()
+        if url: url = url.strip()
+        if filename and filename.endswith('.torrent'):
+            return self.parse_torrent(filename)
+        elif url and url.endswith('.torrent'):
+            return self.parse_torrent('', url)
         mirrors = Mirrors(filename, url)
-        mirrors.parse(filename, data, plain)
+        mirrors.parse('', '', data, plain)
         self.mirrors.add(mirrors, remove_others)
 
     # Call with filename, url or text
@@ -822,8 +984,8 @@ class Metafile(object):
         self.hashes.filename = hashes.filename
         self.hashes.update(hashes)
 
-    def change_filename(self, new, old=''):
-        if not old:
+    def change_filename(self, new, old='', overwrite_filename=True):
+        if overwrite_filename and not old:
             old = self.filename
         if not old or not new:
             return False
@@ -863,52 +1025,51 @@ class Metafile(object):
     def get_urls(self):
         return [res.url for res in self.resources]
 
-class Metalink(object):
-    def __init__(self, overwrite_with_opts=True):
+    def reset(self):
+        """Reset mutable attributes to allow object reuse"""
         self.changelog = ""
-        self.copyright = ""
         self.description = ""
-        self.filename_absolute = ""
-        self.generator = ""
+        self.filename = ""
         self.identity = ""
-        self.license_name = ""
-        self.license_url = ""
+        self.language = ""
         self.logo = ""
-        self.origin = ""
-        self.pubdate = ""
-        self.publisher_name = ""
-        self.publisher_url = ""
-        self.refreshdate = ""
+        self.maxconn_total = ""
+        self.mimetype = ""
+        self.os = ""
         self.releasedate = ""
         self.screenshot = ""
-        self.tags = []
-        self.type = ""
-        self.upgrade = ""
-        self.version = ""
-
-        if overwrite_with_opts:
-            self.apply_command_line_options()
-
-        # For multi-file torrent data
-        self.hashes = Hashes()
-        self.resources = []
         self.signature = ""
         self.signature_type = ""
         self.size = ""
+        self.tags = []
+        self.upgrade = ""
+        self.version = ""
+        self.resources = []
         self.urls = []
-
         self.errors = []
+
+        self.hashes.reset()
+        self.mirrors.reset()
+
+class Metalink(object):
+    def __init__(self, overwrite_with_opts=True):
+        self.hashes = Hashes()
         self.file = Metafile()
-        self.files = [self.file]
-        self.url_prefix = ''
-        self._valid = True
+
+        self.reset(overwrite_with_opts)
 
     def apply_command_line_options(self):
-        for opt in 'changelog copyright description filename_absolute generator identity license_name license_url logo origin pubdate publisher_name publisher_url refreshdate releasedate screenshot tags type upgrade version'.split():
-            if opt in _opts and _opts[opt]:
-                setattr(self, opt, _opts[opt])
+        attrs = {}
+        for opt in 'changelog copyright description filename_absolute generator identity license_name license_url logo origin pubdate publisher_name publisher_url refreshdate releasedate screenshot tags type upgrade version url_prefix os language'.split():
+            if _get_opt(opt):
+                attrs[opt] = _opts[opt]
+        self.setattrs(attrs)
 
     def create_torrent(self, torrent_trackers, torrent):
+        if not self.file.filename:
+            return ['file name must be non-empty']
+        if not self.file.size:
+            return ['file size must be non-empty']
         t = Torrent(torrent)
         data = {'comment':encode_text(self.description), 'files':[[encode_text(self.file.filename), int(self.file.size)]], 'piece length':int(self.file.hashes.piecelength), 'pieces':self.file.hashes.pieces, 'trackers':torrent_trackers, 'created by':generator, 'encoding':'UTF-8'}
         return t.create(data)
@@ -919,9 +1080,11 @@ class Metalink(object):
     def add_url(self, url, type="default", location="", preference="", conns="", add_to_child=True):
         if add_to_child:
             return self.file.add_url(url, type, location, preference, conns)
-        elif url not in self.urls and self.file.mirrors.parse_link(url, location, False):
-            self.resources.append(Resource(url, type, location, preference, conns))
-            self.urls.append(url)
+        if url not in self.urls:
+            l = self.file.mirrors.parse_link(url, location, False, preference)
+            if l:
+                self.resources.append(Resource(l[0], l[1], l[2], l[3], conns))
+                self.urls.append(url)
             return True
         return False
 
@@ -969,6 +1132,8 @@ class Metalink(object):
     def generate(self, filename='', add_p2p=True):
         text = '<?xml version="1.0" encoding="utf-8"?>' + os.linesep
         origin = ""
+        if _get_opt('url_prefix'):
+            self.url_prefix = _get_opt('url_prefix')
         if self.url_prefix:
             text += '<?xml-stylesheet type="text/xsl" href="%smetalink.xsl"?>%s' % (self.url_prefix, os.linesep)
             if not self.origin:
@@ -976,6 +1141,8 @@ class Metalink(object):
                     metalink = os.path.basename(filename)
                 else:
                     metalink = os.path.basename(self.filename_absolute)
+                if not metalink and _get_opt('filename'):
+                    metalink = os.path.basename(_get_opt('filename'))
                 if not metalink.endswith('.metalink'):
                     metalink += '.metalink'
                 self.origin = self.url_prefix + metalink
@@ -1012,24 +1179,44 @@ class Metalink(object):
             data = text.decode('latin1').encode('utf-8')
         if filename:
             if filename is True:
-                filename = (self.filename_absolute or self.file.filename) + '.metalink'
+                filename = (self.filename_absolute or self.file.filename or 'NEW') + '.metalink'
+            elif not filename:
+                filename = 'NEW.metalink'
+
+            directory = _get_opt('directory')
+            if directory:
+                if not os.path.isdir(directory):
+                    print >> sys.stderr, 'ERROR: output directory %s does not exist' % directory
+                    return False
+                filename = directory + os.sep + os.path.basename(filename)
+
             # Create backup
-            if os.path.isfile(filename) and not _opts['overwrite']:
+            if os.path.isfile(filename) and not _get_opt('overwrite'):
                 filename += '.new'
                 # os.rename(filename, filename + '.bak')
-            fp = open(filename, "wb")
-            fp.write(data)
-            fp.close()
-            print 'Generated:', filename
 
-            if _opts['create_torrent']:
+            compress_gzip = _get_opt('compress_gzip')
+            if not _get_opt('create_torrent_only'):
+                fp = open(filename, "wb")
+                fp.write(data)
+                fp.close()
+                print '%s%s' % (verbose is not False and 'Generated: ' or '', filename)
+                if compress_gzip:
+                    if compress_file(filename + '.gz', data):
+                        print '%s%s' % (verbose is not False and 'Generated: ' or '', filename + '.gz')
+
+            create_torrent = _get_opt('create_torrent')
+            if create_torrent:
                 torrent = filename.endswith('.new') and filename[:-4] or filename
                 torrent = (torrent.endswith('.metalink') and torrent[:-9] or torrent) + '.torrent'
-                if os.path.isfile(torrent) and not _opts['overwrite']:
+                if os.path.isfile(torrent) and not _get_opt('overwrite'):
                     torrent += '.new'
-                _errors = self.create_torrent(_opts['create_torrent'], torrent)
+                _errors = self.create_torrent(create_torrent, torrent)
                 if _errors:
                     print 'ERROR while generating %s:\n%s' % (torrent, "\n".join(_errors))
+                elif compress_gzip:
+                        if compress_file(torrent + '.gz', torrent, True):
+                            print '%s%s' % (verbose is not False and 'Generated: ' or '', torrent + '.gz')
             return True
         return data
 
@@ -1079,9 +1266,6 @@ class Metalink(object):
                 setattr(self, attr, self.get_tagvalue(doc, attr))
             self.tags = split_values(self.get_tagvalue(doc, "tags"))
 
-            if overwrite_with_opts:
-                self.apply_command_line_options()
-
             files = self.get_tag(doc, "files")
             if files is None:
                 raise Exception("Failed to parse metalink. Found no <files></files> tag.")
@@ -1121,7 +1305,7 @@ class Metalink(object):
                             for hash in pieces.getElementsByTagName("hash"):
                                 self.file.hashes.pieces.append(self.get_text(hash).lower())
                         else:
-                            print "Load error: missing attributes in <pieces>"
+                            print >> sys.stderr, "Load error: missing attributes in <pieces>"
                 resources = self.get_tag(file, "resources")
                 num_urls = 0
                 if resources is not None:
@@ -1141,6 +1325,9 @@ class Metalink(object):
                 if index < len(metafiles) - 1:
                     self.add_file()
             self.rewind()
+
+            if overwrite_with_opts:
+                self.apply_command_line_options()
         except xml.dom.DOMException, e:
             raise Exception("Failed to load metalink: " + str(e))
         finally:
@@ -1207,7 +1394,7 @@ class Metalink(object):
             self.seek(current_key)
 
     # Call with filename, url or text
-    def parse_mirrors(self, filename='', url='', data='', plain=True, remove_others=False):
+    def parse_mirrors(self, filename='', url='', data='', plain=False, remove_others=False):
         return self.file.parse_mirrors(filename, url, data, plain, remove_others)
 
     # Call with filename, url or text
@@ -1222,11 +1409,11 @@ class Metalink(object):
             else:
                 setattr(self.file, attr, value)
 
-    def change_filename(self, new, old=''):
+    def change_filename(self, new, old='', overwrite_filename=True):
         _old = old or os.path.basename(self.filename_absolute) or self.file.filename
         if _old:
             self.origin = self.origin.replace(_old, new)
-        return self.file.change_filename(new, old)
+        return self.file.change_filename(new, old, overwrite_filename)
 
     def remove_other_mirrors(self, mirrors):
         self.file.remove_other_mirrors(mirrors)
@@ -1344,6 +1531,49 @@ class Metalink(object):
 
     def __iter__(self):
         return iter(self.files)
+
+    def supported_protocols(self):
+        return 'http ftp rsync bittorrent ed2k magnet'.split()
+
+    def reset(self, overwrite_with_opts=True):
+        """Reset mutable attributes to allow object reuse"""
+        self.changelog = ""
+        self.copyright = ""
+        self.description = ""
+        self.filename_absolute = ""
+        self.generator = ""
+        self.identity = ""
+        self.license_name = ""
+        self.license_url = ""
+        self.logo = ""
+        self.origin = ""
+        self.pubdate = ""
+        self.publisher_name = ""
+        self.publisher_url = ""
+        self.refreshdate = ""
+        self.releasedate = ""
+        self.screenshot = ""
+        self.tags = []
+        self.type = ""
+        self.upgrade = ""
+        self.version = ""
+        self.resources = []
+        self.signature = ""
+        self.signature_type = ""
+        self.size = ""
+        self.urls = []
+
+        self.errors = []
+        self.url_prefix = ''
+        self._valid = True
+
+        self.hashes.reset()
+        self.file.reset()
+        # For multi-file torrent data
+        self.files = [self.file]
+
+        if overwrite_with_opts:
+            self.apply_command_line_options()
 
 class Torrent(object):
     def __init__(self, filename='', url=''):
@@ -1490,14 +1720,14 @@ class Torrent(object):
 
         # Write file
         file = filename or self.filename
-        if os.path.isfile(file) and not _opts['overwrite']:
+        if os.path.isfile(file) and not _get_opt('overwrite'):
             file += '.new'
         fp = open(file, "wb")
         fp.write(self.bencode(root))
         fp.close()
-        print 'Generated:', file
+        print '%s%s' % (verbose is not False and 'Generated: ' or '', file)
 
-        return []
+        return errors
 
     def bdecode(self):
         c = self.data[self.pos]
@@ -1509,7 +1739,14 @@ class Torrent(object):
                 key = self._process_string()
                 d[key] = self.bdecode()
                 if not self.infohash and 'info' == key:
-                    self.infohash = sha.sha(self.data[start:self.pos]).hexdigest().upper()
+                    try:
+                        import hashlib
+                        hashfunc = hashlib.sha1
+                    except:
+                        # Import deprecated modules
+                        import sha
+                        hashfunc = sha.new
+                    self.infohash = hashfunc(self.data[start:self.pos]).hexdigest().upper()
             self.pos += 1
             return d
         elif c == 'l':
@@ -1570,56 +1807,158 @@ class Torrent(object):
 
 class Mirrors(object):
     def __init__(self, filename='', url=''):
-        self.filename = filename
-        self.url = url
-        self.locations = "af ax al dz as ad ao ai aq ag ar am aw au at az bs bh bd bb by be bz bj bm bt bo ba bw bv br io bn bg bf bi kh cm ca cv ky cf td cl cn cx cc co km cg cd ck cr ci hr cu cy cz dk dj dm do ec eg sv gq er ee et fk fo fj fi fr gf pf tf ga gm ge de gh gi gr gl gd gu gt gg gn gw gy ht hm va hn hk hu is in id ir iq ie im il it jm jp je jo kz ke ki kp kr kw kg la lv lb ls lr ly li lt lu mo mk mg mw my mv ml mt mh mq mr mu yt mx fm md mc mn me ms ma mz mm na nr np nl an nc nz ni ne ng nu nf mp no om pk pw ps pa pg py pe ph pn pl pt pr qa re ro ru rw sh kn lc pm vc ws sm st sa sn rs sc sl sg sk si sb so za gs es lk sd sr sj sz se ch sy tw tj tz th tl tg tk to tt tn tr tm tc tv ug ua ae gb us um uy uz vu ve vn vg vi wf eh ye zm zw".split()
-        self.search_link = re.compile(r'((?:(ftps?|https?|rsync|ed2k)://|(magnet):\?)[^" <>\r\n]+)')
-        self.search_links = re.compile(r'((?:(?:ftps?|https?|rsync|ed2k)://|magnet:\?)[^" <>\r\n]+)')
+        self.locations = "af ax al dz as ad ao ai aq ag ar am aw au at az bs bh bd bb by be bz bj bm bt bo ba bw bv br io bn bg bf bi kh cm ca cv ky cf td cl cn cx cc co km cg cd ck cr ci hr cu cy cz dk dj dm do ec eg sv gq er ee et fk fo fj fi fr gf pf tf ga gm ge de gh gi gr gl gd gu gt gg gn gw gy ht hm va hn hk hu is in id ir iq ie im il it jm jp je jo kz ke ki kp kr kw kg la lv lb ls lr ly li lt lu mo mk mg mw my mv ml mt mh mq mr mu yt mx fm md mc mn me ms ma mz mm na nr np nl an nc nz ni ne ng nu nf mp no om pk pw ps pa pg py pe ph pn pl pt pr qa re ro ru rw sh kn lc pm vc ws sm st sa sn rs sc sl sg sk si sb so za gs es lk sd sr sj sz se ch sy tw tj tz th tl tg tk to tt tn tr tm tc tv ug ua ae gb us um uy uz vu ve vn vg vi wf eh ye zm zw uk".split()
+        self.search_eclipse = re.compile(r'http://(?:(?:www\.)?eclipse\.org/[^/]+/download\.php\?file=([^&]+)|[^.]+\.eclipse.org(/eclipse/downloads/drops/[^/]+/)download\.php\?dropFile=([^&]+))')
+        self.search_sourceforge = re.compile(r'https?://(?:downloads|(?:[^.]+)?\.?dl)\.(?:sourceforge|sf)\.net(/[^/]+/[^?]+)|https?://(?:sourceforge|sf).net/project/downloading.php\?group_id=\d+\&filename=([^&]+)')
+        self.search_mysql = re.compile(r'(http://dev.mysql.com/get/Downloads/)([^/]+/)([^/]+)(?:/from/)?.*')
+        self.search_link = re.compile(r'(?:(\d{1,3}|[A-Za-z]{2})\s+)?(?:(\d{1,3}|[A-Za-z]{2})\s+)?((?:(ftps?|https?|rsync|ed2k)://|(magnet):\?)[^" <>\r\n]+)')
+        self.search_links = re.compile(r'(?:(\d{1,3}|[A-Za-z]{2})\s+)?(?:(\d{1,3}|[A-Za-z]{2})\s+)?((?:(?:ftps?|https?|rsync|ed2k)://|magnet:\?)[^" <>\r\n]+)')
         self.search_location = re.compile(r'(?:ftps?|https?|rsync)://([^/]*?([^./]+\.([^./]+)))/')
         self.search_btih = re.compile(r'xt=urn:btih:[a-zA-Z0-9]{32}')
-        self.domains = {'ovh.net':'fr', 'clarkson.edu':'us', 'yousendit.com':'us', 'lunarpages.com':'us', 'kgt.org':'de', 'vt.edu':'us', 'lupaworld.com':'cn', 'pdx.edu':'us', 'mainseek.com':'pl', 'vmmatrix.net':'cn', 'mirrormax.net':'us', 'cn99.com':'cn', 'anl.gov':'us', 'mirrorservice.org':'gb', 'oleane.net':'fr', 'proxad.net':'fr', 'osuosl.org':'us', 'telia.net':'dk', 'mtu.edu':'us', 'utah.edu':'us', 'oakland.edu':'us', 'calpoly.edu':'us', 'supp.name':'cz', 'wayne.edu':'us', 'tummy.com':'us', 'dotsrc.org':'dk', 'ubuntu.com':'sp', 'wmich.edu':'us', 'smenet.org':'us', 'bay13.net':'de', 'saix.net':'za', 'vlsm.org':'id', 'ac.uk':'gb', 'optus.net':'au', 'esat.net':'ie', 'unrealradio.org':'us', 'dudcore.net':'us', 'filearena.net':'au', 'ale.org':'us', 'linux.org':'se', 'ipacct.com':'bg', 'planetmirror.com':'au', 'tds.net':'us', 'ac.yu':'sp', 'stealer.net':'de', 'co.uk':'gb', 'iu.edu':'us', 'jtlnet.com':'us', 'umn.edu':'us', 'rfc822.org':'de', 'opensourcemirrors.org':'us', 'xmission.com':'us', 'xtec.net':'es', 'nullnet.org':'us', 'ubuntu-es.org':'es', 'roedu.net':'ro', 'mithril-linux.org':'jp', 'gatech.edu':'us', 'ibiblio.org':'us', 'kangaroot.net':'be', 'comactivity.net':'se', 'prolet.org':'bg', 'actuatechina.com':'cn', 'areum.biz':'kr', 'daum.net':'kr', 'daum.net':'kr', 'calvin.edu':'us', 'columbia.edu':'us', 'crazeekennee.com':'us', 'buffalo.edu':'us', 'uta.edu':'us', 'software-mirror.com':'us', 'optusnet.dl.sourceforge.net':'au', 'belnet.dl.sourceforge.net':'be', 'ufpr.dl.sourceforge.net':'br', 'puzzle.dl.sourceforge.net':'ch', 'switch.dl.sourceforge.net':'ch', 'dfn.dl.sourceforge.net':'de', 'mesh.dl.sourceforge.net':'de', 'ovh.dl.sourceforge.net':'fr', 'heanet.dl.sourceforge.net':'ie', 'garr.dl.sourceforge.net':'it', 'jaist.dl.sourceforge.net':'jp', 'surfnet.dl.sourceforge.net':'nl', 'nchc.dl.sourceforge.net':'tw', 'kent.dl.sourceforge.net':'uk', 'easynews.dl.sourceforge.net':'us', 'internap.dl.sourceforge.net':'us', 'superb-east.dl.sourceforge.net':'us', 'superb-west.dl.sourceforge.net':'us', 'umn.dl.sourceforge.net':'us'}
-        self.mirrors = []
-        self.urls = []
+        self.domains = {'postgresql.org':'at', 'tarpoon.org':'fr', 'carroll.aset.psu.edu':'us', 'yoxos.com':'de', 'ialto.org':'fr', 'linux-bg.org':'bg', 'fpt.net':'vn', 'harvard.edu':'us', 'sourceshare.org':'us', 'bevc.net':'si', 'ovh.net':'fr', 'clarkson.edu':'us', 'yousendit.com':'us', 'lunarpages.com':'us', 'kgt.org':'de', 'vt.edu':'us', 'lupaworld.com':'cn', 'pdx.edu':'us', 'mainseek.com':'pl', 'vmmatrix.net':'cn', 'mirrormax.net':'us', 'cn99.com':'cn', 'anl.gov':'us', 'mirrorservice.org':'gb', 'oleane.net':'fr', 'proxad.net':'fr', 'osuosl.org':'us', 'telia.net':'dk', 'mtu.edu':'us', 'utah.edu':'us', 'oakland.edu':'us', 'stanford.edu':'us', 'rit.edu':'us', 'calpoly.edu':'us', 'supp.name':'cz', 'wayne.edu':'us', 'tummy.com':'us', 'dotsrc.org':'dk', 'ubuntu.com':'sp', 'wmich.edu':'us', 'smenet.org':'us', 'bay13.net':'de', 'saix.net':'za', 'vlsm.org':'id', 'ac.uk':'gb', 'optus.net':'au', 'esat.net':'ie', 'unrealradio.org':'us', 'dudcore.net':'us', 'filearena.net':'au', 'ale.org':'us', 'linux.org':'se', 'ipacct.com':'bg', 'planetmirror.com':'au', 'tds.net':'us', 'ac.yu':'sp', 'stealer.net':'de', 'co.uk':'gb', 'iu.edu':'us', 'jtlnet.com':'us', 'umn.edu':'us', 'rfc822.org':'de', 'opensourcemirrors.org':'us', 'xmission.com':'us', 'xtec.net':'es', 'nullnet.org':'us', 'ubuntu-es.org':'es', 'roedu.net':'ro', 'mithril-linux.org':'jp', 'gatech.edu':'us', 'ibiblio.org':'us', 'kangaroot.net':'be', 'comactivity.net':'se', 'prolet.org':'bg', 'actuatechina.com':'cn', 'areum.biz':'kr', 'daum.net':'kr', 'daum.net':'kr', 'calvin.edu':'us', 'columbia.edu':'us', 'crazeekennee.com':'us', 'buffalo.edu':'us', 'uta.edu':'us', 'software-mirror.com':'us', 'unixheads.org':'us', 'optusnet.dl.sourceforge.net':'au', 'belnet.dl.sourceforge.net':'be', 'ufpr.dl.sourceforge.net':'br', 'puzzle.dl.sourceforge.net':'ch', 'switch.dl.sourceforge.net':'ch', 'dfn.dl.sourceforge.net':'de', 'mesh.dl.sourceforge.net':'de', 'ovh.dl.sourceforge.net':'fr', 'heanet.dl.sourceforge.net':'ie', 'garr.dl.sourceforge.net':'it', 'jaist.dl.sourceforge.net':'jp', 'surfnet.dl.sourceforge.net':'nl', 'nchc.dl.sourceforge.net':'tw', 'kent.dl.sourceforge.net':'uk', 'easynews.dl.sourceforge.net':'us', 'internap.dl.sourceforge.net':'us', 'superb-east.dl.sourceforge.net':'us', 'superb-west.dl.sourceforge.net':'us', 'umn.dl.sourceforge.net':'us'}
 
-    def parse(self, filename='', data='', plain=True):
+        self.reset(filename, url)
+
+    def parse(self, filename='', url='', data='', plain=False):
         '''Main function to parse mirror data'''
-        if not data and (filename or self.filename or self.url):
-            if filename or self.filename:
-                fp = open(filename or self.filename, "rb")
+        _filename = ''
+        _url = ''
+        from_url = False
+        if not data and (filename or url or self.filename or self.url):
+            if filename or (self.filename and not url):
+                _filename = filename or self.filename
+                fp = open(_filename, "rb")
                 data = fp.read()
                 fp.close()
             else:
-                data = get_url(self.url)
+                from_url = True
+                _url = url and url or self.url
+                data, _filename = self.parse_url(_url)
+                if not re.search(r"[\n\r]", data):
+                    data = get_url(data)
         if not data:
             return False
 
+        # Filter links
+        filter = _get_opt('filter')
+        filter_regex = _get_opt('filter_regex')
+        if filter_regex:
+            filter_regex = re.compile(filter_regex)
+        filter_from = _get_opt('filter_from')
+        if filter_from:
+            m = re.search(filter_from, data)
+            if m: data = data[m.start():]
+        filter_to = _get_opt('filter_to')
+        if filter_to:
+            m = re.search(filter_to, data)
+            if m: data = data[:m.end()]
+
+        _filename = _get_opt('filename') or _filename
+
+        # Try to default filter by filename for URLs
+        filtered = self.filter_custom or filter or filter_regex or filter_from or filter_to
+        if from_url and not filtered:
+            name = _filename or os.path.basename(_url)
+            if '.' in name and '?' not in name and '#' not in name:
+                filter = name
+                filtered = True
+
+        # Search links
         if plain:
-            links = unique([line.strip() for line in data.splitlines() if line.strip()])
+            links = unique([self.search_link.search(line).group(1, 2, 3) for line in data.splitlines() if line.strip() and self.search_link.search(line)], 2)
         else:
-            links = unique(self.search_links.findall(data))
-        self.mirrors.extend([link for link in [self.parse_link(link) for link in links] if link])
+            if self.search_links_custom:
+                links = unique(self.search_links_custom.findall(data))
+                self.search_links_custom = None
+            else:
+                links = unique(self.search_links.findall(data), 2)
+        if self.filter_custom:
+            links = [l for l in [self.filter_custom(l) for l in links] if l]
+        else:
+            links = [l for l in links if (not filter or filter in l[2]) and (not filter_regex or filter_regex.search(l[2]))]
+
+        # Try to guess from URL and parsed links
+        if not _filename:
+            name = os.path.basename(_url)
+            if name and '.' in name and '?' not in name and '#' not in name:
+                for link in links:
+                    if os.path.basename(self.filter_custom and link or link[2]) == name:
+                        _filename = name
+                        break
+                # Filter afterwards
+                if _filename and from_url and not filtered:
+                    links = [l for l in links if os.path.basename(l[2]) == _filename]
+
+        # Append filename
+        if _filename:
+            for i, link in enumerate(links):
+                if link[2][-1] == '/':
+                    links[i] = (link[0], link[1], link[2] + _filename)
+
+        self.mirrors.extend([link for link in [self.parse_link(link, is_match=not self.filter_custom) for link in links] if link])
+        if self.filter_custom: self.filter_custom = None
         return True
 
-    # Return list (link, type, location, preference, language)
-    def parse_link(self, link, location='', check_duplicate=True):
-        m = self.search_link.match(link)
+    def parse_url(self, url):
+        m = self.search_eclipse.match(url)
         if m:
             group = m.groups()
-            type = group[0].endswith('.torrent') and 'bittorrent' or group[1] or group[2]
-            _location = self.parse_location(group[0], location)
-            if group[0] in self.urls:
+            filepath = group[0] is None and ''.join(group[1:]) or group[0]
+            return 'http://www.eclipse.org/downloads/download.php?file=' + filepath + '&format=xml', os.path.basename(filepath)
+        m = self.search_sourceforge.match(url)
+        if m:
+            filepath = max(m.groups())
+
+            # Path unknown, only filename -> download and parse URL
+            if filepath[0] != '/':
+                content = get_url(url)
+                m = re.search('sourceforge.net(/sourceforge/[^/]+/' + re.escape(filepath) + ')', content)
+                if not m:
+                    return ''
+                filepath = m.group(1)
+            mirrors = ['http://' + mirror + filepath for mirror in self.domains.keys() if mirror.endswith('.sourceforge.net')]
+            return "\n".join(mirrors), os.path.basename(filepath)
+        m = self.search_mysql.match(url)
+        if m:
+            group = m.groups()
+            filepath = ''.join(group)
+            self.search_links_custom = re.compile(r'<a\s+[^>]*href="([^"]+)"')
+            search_link = re.compile(r'^/get/(Downloads/[^/]+/[^/]+)/from/(.+)')
+            def filter(link):
+                m = search_link.search(link)
+                return m and m.group(2) + m.group(1) or False
+            self.filter_custom = filter
+            return filepath + '/from/pick', os.path.basename(filepath)
+        return url, ''
+
+    # Return list (link, type, location, preference, language)
+    def parse_link(self, link, location='', check_duplicate=True, preference='', is_match=False):
+        m = self.search_link.match(is_match and link[2] or link)
+        if m:
+            # Check for location and preference information
+            if is_match and not location: location = link[0]
+            if is_match and not preference: preference = link[1]
+            if location and location.isdigit() or preference and re.match('^[A-Za-z]{2}$', preference):
+                location, preference = (preference, location)
+            group = m.groups()
+            type = group[2].endswith('.torrent') and 'bittorrent' or group[3] or group[4]
+            # P2P links are not allowed to include location
+            location = type not in 'bittorrent ed2k magnet'.split() and self.parse_location(group[2], location) or ''
+            if group[2] in self.urls:
                 if check_duplicate:
-                    print 'Duplicate mirror found:', group[0]
+                    print >> sys.stderr, 'Duplicate mirror found:', group[2]
                     return None
             else:
-                self.urls.append(group[0])
-            preference = self.parse_preference(group[0], type)
-            return [group[0], type, _location, preference]
-        print 'Invalid mirror link:', link
+                self.urls.append(group[2])
+            preference = self.parse_preference(group[2], type, preference)
+            return [group[2], type, location, preference]
+        print >> sys.stderr, 'Invalid mirror link:', link
         return None
 
     # Return location if a valid 2-letter country code can be found
     def parse_location(self, link, location=''):
+        if location and re.match('^[A-Za-z]{2}$', location):
+            return location.lower()
         m = self.search_location.match(link)
         if m:
             group = m.groups()
@@ -1629,13 +1968,28 @@ class Mirrors(object):
                 return self.domains[group[1]]
             if group[0] in self.domains:
                 return self.domains[group[0]]
+            # Support ftp.us.postgresql.org style domain names
+            prefix = group[0][:-(len(group[1])+1)]
+            if len(group[0]) > len(group[1]) and re.search(r'(^|[^.]+\.)[a-z]{2}$', prefix) and prefix[-2:] in self.locations:
+                return prefix[-2:]
             if location:
                 self.domains[group[1]] = location
                 return location
-            print 'Country unknown for:', group[0]
-        return ''
+            if not group[0] in self.__class__.unknown_domains:
+                print >> sys.stderr, 'Country unknown for:', group[0]
+                self.__class__.unknown_domains.append(group[0])
+        return location
 
-    def parse_preference(self, link, type):
+    def parse_preference(self, link, type, preference=0):
+        try:
+            preference = int(preference)
+            if 0 < preference <= 100: return str(preference)
+        except:
+            pass
+
+        if _get_opt('preference', type):
+            return _get_opt('preference', type)
+
         if 'bittorrent' == type:
             return '100'
         if 'ed2k' == type:
@@ -1644,6 +1998,8 @@ class Mirrors(object):
             if self.search_btih.search(link):
                 return '99'
             return '90'
+        if 'ftp' == type:
+            return '30'
         return '10'
 
     def change_filename(self, new, old=''):
@@ -1682,22 +2038,35 @@ class Mirrors(object):
         self.mirrors = [mirror for mirror in self.mirrors if mirror[1] in types or mirror[0] in mirrors.urls]
         self.urls = [mirror[0] for mirror in self.mirrors]
 
+    # basename of first URL, which is no P2P link
+    def get_filename(self):
+        p2p = 'bittorrent ed2k magnet'.split()
+        for mirror in self.mirrors:
+            if mirror[1] not in p2p:
+                return urllib.unquote(os.path.basename(mirror[0]))
+        return ''
+
+    def reset(self, filename='', url=''):
+        """Reset mutable attributes to allow object reuse"""
+        self.filename = filename
+        self.url = url
+        self.search_links_custom = None
+        self.filter_custom = None
+        self.mirrors = []
+        self.urls = []
+
+    def __repr__(self):
+        return "\n".join([link[0] for link in self.mirrors])
+
+    unknown_domains = []
+
 class Hashes(object):
     def __init__(self, filename='', url=''):
-        self.filename = ''
-        self.filename_absolute = ''
-        self.set_file(filename)
-        self.url = url
         self.search_hashes = r"^(([a-z0-9]{32,64})\s+(?:\?(AICH|BTIH|EDONKEY|SHA1|SHA256))?\*?([^\r\n]+))"
         # aich=ED2K AICH hash, btih=BitTorrent infohash (= magnet:?xt=urn:btih link)
         self.verification_hashes = 'md4 md5 sha1 sha256 sha384 sha512 rmd160 tiger crc32 btih ed2k aich'
-        self.hashes = {}
-        self.init()
-        self.last_hash_file = ''
-        self.pieces = []
-        self.piecelength = 0
-        self.piecetype = ''
-        self.files = []
+
+        self.reset(filename, url)
 
     def init(self):
         self.pieces = []
@@ -1740,7 +2109,7 @@ class Hashes(object):
                 for _type, length in {'ED2K':32, 'AICH':32, 'BTIH':40}.items():
                     if _type == type:
                         if len(hash) != length:
-                            print 'Invalid %s hash: %s' % (type, line.strip())
+                            print >> sys.stderr, 'Invalid %s hash: %s' % (type, line.strip())
                         elif not force_type or force_type.upper() == _type:
                             self.hashes[_type.lower()][name] = hash
                             count += 1
@@ -1897,6 +2266,20 @@ class Hashes(object):
 
     def __contains__(self, hash):
         return self.has(hash)
+
+    def reset(self, filename='', url=''):
+        """Reset mutable attributes to allow object reuse"""
+        self.filename = ''
+        self.filename_absolute = ''
+        self.set_file(filename)
+        self.url = url
+        self.hashes = {}
+        self.init()
+        self.last_hash_file = ''
+        self.pieces = []
+        self.piecelength = 0
+        self.piecetype = ''
+        self.files = []
 
 class OptParser(object):
     def __init__(self, long_options = []):
@@ -2090,6 +2473,24 @@ class OptParser(object):
 def doGetopt(args, long_options=[]):
     optParser = OptParser(long_options)
     return optParser.parse(args)
+
+def _get_opt(opt, key=None):
+    if opt not in _opts:
+        return None
+    if key is not None:
+        try:
+            return _opts[opt][key]
+        except:
+            return None
+    return _opts[opt]
+
+def _set_opt(opt, value, key=None):
+    if key is not None:
+        if opt not in _opts:
+            _opts[opt] = {}
+        _opts[opt][key] = value
+    else:
+        _opts[opt] = value
 
 
 if __name__ == '__main__':
